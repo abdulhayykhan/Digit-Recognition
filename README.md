@@ -86,7 +86,7 @@ The Streamlit app has four tabs.
 **Predict**
 - *Test sample:* browse the held-out test images and compare the prediction with the true label.
 - *Edit pixels:* edit the 8×8 pixel grid by hand (values 0 to 16) and watch the prediction change.
-- *Upload image:* upload a picture of a single digit. It is inverted if needed, cropped to the digit, squared and shrunk to 8×8 before prediction.
+- *Upload image:* upload a picture of a single digit. It is inverted if needed, cropped to the digit, converted to a 32×32 bitmap and reduced to 8×8 by counting on-pixels in 4×4 blocks (the way the Digits dataset was built), with thin strokes thickened to match the training data.
 - Every prediction shows the predicted class, confidence and a probability bar chart for all 10 digits.
 
 **Train your own**
@@ -216,7 +216,8 @@ Plain SGD and SGD with Momentum use lr 0.01; RMSProp and Adam use lr 0.001.
 
 - Each configuration was run **once**. With only 360 test images, a difference of about 1 percentage point equals roughly 3 images and is within noise.
 - The dataset is small and low-resolution (8×8), so results do not transfer directly to full-size MNIST or real handwriting.
-- Photos uploaded in the app are shrunk to 8×8, so accuracy on them is lower than on the test set. A round-trip check on dataset digits rendered as large images gave about 92%.
+- Uploaded images are out-of-distribution. On 1,500 real MNIST test digits fed through the upload pipeline, the model reaches about 55%, versus 97% on the Digits test set, because of differences in stroke style and resolution. Dataset digits re-rendered as large images are recognized about 90% of the time. Expect frequent mistakes on photos and hand-drawn images.
+- The *Train your own* tab warns when training becomes unstable (for example, 4 layers × 256 neurons with Adam at learning rate 0.01 reaches about 97% and then collapses).
 - No regularization (dropout, weight decay, early stopping) is used.
 
 ## Future work
@@ -225,6 +226,7 @@ Plain SGD and SGD with Momentum use lr 0.01; RMSProp and Adam use lr 0.001.
 - Add dropout, weight decay and early stopping.
 - Move to full MNIST with a convolutional network and compare against this fully connected baseline.
 - Add a drawing canvas to the Predict tab.
+- Train with data augmentation (shifts, rotations, stroke thickness) to improve robustness on real-world images.
 
 ## Tech stack
 

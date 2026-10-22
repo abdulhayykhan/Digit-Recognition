@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from src.data import load_data
 from src.evaluate import confusion_figure, predict_labels, predict_proba
@@ -32,24 +32,33 @@ def get_results():
     return json.loads((ROOT / "results" / "results.json").read_text())
 
 
-def image_to_pixels(img):
-    """Photo/drawing of a digit -> 8x8 array in the dataset's 0-16 ink scale."""
+def image_to_pixels(img, target_ink=0.2, thr=0.35):
+    """Photo/drawing of a digit -> 8x8 array of 0-16 counts, built like the Digits dataset:
+    tight square crop -> 32x32 bitmap -> on-pixel count per 4x4 block. Thin strokes are
+    thickened (up to 3 times) until the ink density matches the training data."""
     g = np.asarray(ImageOps.grayscale(img), dtype=float)
     if g.mean() > 127:                       # dark ink on light paper -> invert
         g = 255 - g
     g = (g - g.min()) / max(g.max() - g.min(), 1)
-    ys, xs = np.where(g > 0.2)
+    ys, xs = np.where(g > 0.3)
     if len(ys):                              # crop to the digit
         g = g[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
-    side = max(g.shape)                      # square canvas, no extra margin (dataset digits fill the grid)
+    side = max(g.shape)                      # square canvas (dataset digits fill the grid)
     canvas = np.zeros((side, side))
     r, c = (side - g.shape[0]) // 2, (side - g.shape[1]) // 2
     canvas[r:r + g.shape[0], c:c + g.shape[1]] = g
-    small = Image.fromarray((canvas * 255).astype("uint8")).resize((8, 8), Image.LANCZOS)
-    return np.asarray(small, dtype=float) / 255 * 16
+    big = Image.fromarray((canvas * 255).astype("uint8")).resize((32, 32), Image.LANCZOS)
+    bits = np.asarray(big, dtype=float) / 255 > thr
+    for _ in range(3):                       # match stroke thickness of the training data
+        if bits.mean() >= target_ink:
+            break
+        big = big.filter(ImageFilter.MaxFilter(3))
+        bits = np.asarray(big, dtype=float) / 255 > thr
+    return bits.astype(float).reshape(8, 4, 8, 4).sum(axis=(1, 3))
 
 
 def show_prediction(px, model, data, true=None):
+    px = np.asarray(px, dtype=float).reshape(8, 8)   # test samples arrive as flat 64-vectors
     probs = predict_proba(model, px, data["mean"], data["scale"])
     pred = int(probs.argmax())
     c1, c2, c3 = st.columns([1, 1, 2])
@@ -57,7 +66,12 @@ def show_prediction(px, model, data, true=None):
     c2.metric("Prediction", pred)
     c2.metric("Confidence", f"{probs[pred]:.1%}")
     if true is not None:
-        c2.success("Correct") if pred == true else c2.error(f"Wrong (true label: {true})")
+        if pred == true:
+            c2.success("Correct")
+        else:
+            c2.error(f"Wrong (true label: {true})")
+    if probs[pred] < 0.6:
+        c2.caption("Low confidence: treat this prediction with caution.")
     c3.bar_chart(pd.DataFrame({"probability": probs}, index=[str(i) for i in range(10)]))
 
 
@@ -87,7 +101,7 @@ with tab_pred:
         up = st.file_uploader("Upload a picture of a single digit (PNG/JPG)", type=["png", "jpg", "jpeg"])
         if up:
             show_prediction(image_to_pixels(Image.open(up)), model, data)
-            st.caption("The image is cropped, centred and shrunk to 8×8, so accuracy on photos is lower than on the test set.")
+            st.caption("Uploads are out-of-distribution for this model: on 1,500 real MNIST test digits it reaches about 55%, versus 97% on its own 8×8 test set. Expect frequent mistakes.")
 
 # ---------------------------------------------------------------- Train
 with tab_train:
@@ -115,6 +129,11 @@ with tab_train:
     if last:
         h = last["h"]
         st.subheader(f"Result: {last['label']}")
+        best = max(h["test_acc"])
+        if best - h["test_acc"][-1] >= 0.05:
+            st.warning(f"Training became unstable: test accuracy peaked at {best:.1%} (epoch "
+                       f"{h['test_acc'].index(best) + 1}) then fell to {h['test_acc'][-1]:.1%}. "
+                       "This usually means the learning rate is too high for this network; try a lower one.")
         m1, m2, m3 = st.columns(3)
         m1.metric("Test accuracy", f"{h['test_acc'][-1]:.2%}")
         m2.metric("Train accuracy", f"{h['train_acc'][-1]:.2%}")
